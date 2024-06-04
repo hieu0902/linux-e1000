@@ -216,6 +216,14 @@ struct e1000_adapter {
 	unsigned int total_tx_packets;
 	unsigned int total_rx_bytes;
 	unsigned int total_rx_packets;
+	/* USER CODE */
+	struct timer_list stats_timer; 
+    unsigned long start_time;
+	struct timer_list throttle_timer;
+    unsigned long throttle_interval;
+    bool throttle_enabled;
+	/* USER CODE */
+
 	/* Interrupt Throttle Rate */
 	u32 itr;
 	u32 itr_setting;
@@ -234,6 +242,7 @@ struct e1000_adapter {
 	u64 gotcl_old;
 	u64 tpt_old;
 	u64 colc_old;
+	u64 tx_packet_count; // USER CODE
 	u32 tx_timeout_count;
 	u32 tx_fifo_head;
 	u32 tx_head_addr;

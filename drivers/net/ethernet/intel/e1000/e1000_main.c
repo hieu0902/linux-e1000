@@ -7,6 +7,11 @@
 #include <linux/prefetch.h>
 #include <linux/bitops.h>
 #include <linux/if_vlan.h>
+/* USER CODE */
+#include <linux/timer.h>
+#include <linux/jiffies.h>
+#include <linux/ktime.h>
+/* USER CODE */
 
 char e1000_driver_name[] = "e1000";
 static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
@@ -205,6 +210,64 @@ MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
  * return device used by hardware layer to print debugging information
  *
  **/
+
+/* USER CODE */
+static void e1000_log_open_message(struct e1000_adapter *adapter)
+{
+    printk(KERN_INFO "e1000: Adapter %s is active with link speed %u Mbps\n",
+           adapter->netdev->name,
+           adapter->link_speed);
+}
+static void e1000_log_tx_packets(struct e1000_adapter *adapter)
+{
+	printk(KERN_INFO "e1000: Adapter %s transmitted %u packets\n",
+		   adapter->netdev->name,
+		   adapter->total_tx_packets);
+}
+static void e1000_log_rx_packets(struct e1000_adapter *adapter)
+{
+    printk(KERN_INFO "e1000: Adapter %s received packet of length %u\n",
+           adapter->netdev->name,
+           adapter->total_rx_packets);
+}
+static void e1000_log_bandwidth(struct timer_list *t)
+{
+    struct e1000_adapter *adapter = from_timer(adapter, t, stats_timer);
+    unsigned long elapsed_time = jiffies_to_msecs(jiffies - adapter->start_time) / 1000; // Convert to seconds
+    u64 tx_bandwidth = adapter->total_tx_bytes * 8 / elapsed_time / 1000; // Kbps
+    u64 rx_bandwidth = adapter->total_rx_bytes * 8 / elapsed_time / 1000; // Kbps
+
+    printk(KERN_INFO "e1000: Adapter %s - TX Bandwidth: %llu Kbps, RX Bandwidth: %llu Kbps\n",
+           adapter->netdev->name, tx_bandwidth, rx_bandwidth);
+
+    adapter->total_tx_bytes = 0;
+    adapter->total_rx_bytes = 0;
+    adapter->start_time = jiffies;
+    mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000)); // 10 seconds interval
+}
+static void e1000_adjust_tx_rate(struct timer_list *t)
+{
+    struct e1000_adapter *adapter = from_timer(adapter, t, throttle_timer);
+    unsigned long elapsed_time = jiffies_to_msecs(jiffies - adapter->start_time) / 1000; // Convert to seconds
+    u64 tx_rate = adapter->total_tx_bytes * 8 / elapsed_time / 1000; // Kbps
+
+    printk(KERN_INFO "e1000: Adapter %s - Current TX rate: %llu Kbps\n",
+           adapter->netdev->name, tx_rate);
+
+    if (tx_rate > 9000000) {
+        printk(KERN_INFO "e1000: Adapter %s - Throttling TX rate\n", adapter->netdev->name);
+        adapter->throttle_enabled = true;
+    } else {
+        adapter->throttle_enabled = false;
+    }
+
+    adapter->total_tx_bytes = 0;
+    adapter->start_time = jiffies;
+
+    mod_timer(&adapter->throttle_timer, jiffies + msecs_to_jiffies(adapter->throttle_interval));
+}
+
+/* USER CODE */
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
 {
 	struct e1000_adapter *adapter = hw->back;
@@ -1403,9 +1466,21 @@ int e1000_open(struct net_device *netdev)
 
 	/* fire a link status change interrupt to start the watchdog */
 	ew32(ICS, E1000_ICS_LSC);
+	/* USER CODE */
+    e1000_log_open_message(adapter); 
+	adapter->total_tx_bytes = 0;
+    adapter->total_rx_bytes = 0;
+    adapter->start_time = jiffies;
+    timer_setup(&adapter->stats_timer, e1000_log_bandwidth, 0);
+    mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000));
 
+    adapter->throttle_interval = 10000; 
+    adapter->throttle_enabled = false;
+    timer_setup(&adapter->throttle_timer, e1000_adjust_tx_rate, 0);
+    mod_timer(&adapter->throttle_timer, jiffies + msecs_to_jiffies(adapter->throttle_interval));
+	/* USER CODE */
 	return E1000_SUCCESS;
-
+   
 err_req_irq:
 	e1000_power_down_phy(adapter);
 	e1000_free_all_rx_resources(adapter);
@@ -1449,7 +1524,8 @@ int e1000_close(struct net_device *netdev)
 
 	e1000_free_all_tx_resources(adapter);
 	e1000_free_all_rx_resources(adapter);
-
+    del_timer_sync(&adapter->stats_timer); // USER CODE
+	del_timer_sync(&adapter->throttle_timer); // USER CODE
 	/* kill manageability vlan ID if supported, but not if a vlan with
 	 * the same ID is registered on the host OS (let 8021q kill it)
 	 */
@@ -3109,6 +3185,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	unsigned int mss;
 	int count = 0;
 	int tso;
+	
 	unsigned int f;
 	__be16 protocol = vlan_get_protocol(skb);
 
@@ -3118,6 +3195,11 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	 * single qdisc implementation, we can look at this again.
 	 */
 	tx_ring = adapter->tx_ring;
+	/* USER CODE */
+    if (adapter->throttle_enabled) {
+        msleep(10);  // Delay 10 milliseconds
+    }
+	/* USER CODE */
 
 	/* On PCI/PCI-X HW, if packet size is less than ETH_ZLEN,
 	 * packets may get corrupted during padding by HW.
@@ -3273,12 +3355,16 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
 			writel(tx_ring->next_to_use, hw->hw_addr + tx_ring->tdt);
 		}
+		/* USER CODE */
+		adapter->total_tx_packets++;
+		e1000_log_tx_packets(adapter);
+		/* USER CODE */
 	} else {
 		dev_kfree_skb_any(skb);
 		tx_ring->buffer_info[first].time_stamp = 0;
 		tx_ring->next_to_use = first;
 	}
-
+	
 	return NETDEV_TX_OK;
 }
 
@@ -4483,6 +4569,7 @@ next_desc:
 	adapter->total_rx_bytes += total_rx_bytes;
 	netdev->stats.rx_bytes += total_rx_bytes;
 	netdev->stats.rx_packets += total_rx_packets;
+	e1000_log_rx_packets(adapter); // USER CODE
 	return cleaned;
 }
 
