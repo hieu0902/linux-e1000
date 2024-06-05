@@ -218,10 +218,17 @@ struct e1000_adapter {
 	unsigned int total_rx_packets;
 	/* USER CODE */
 	struct timer_list stats_timer; 
-    unsigned long start_time;
+    unsigned long bandwidth_start_time;
+	unsigned long error_start_time;
+	unsigned long throttle_start_time;
 	struct timer_list throttle_timer;
     unsigned long throttle_interval;
     bool throttle_enabled;
+	unsigned long tx_errors; 
+    unsigned long rx_errors; 
+    struct timer_list error_check_timer;
+	ktime_t last_tx_timestamp; 
+    struct timer_list latency_timer;
 	/* USER CODE */
 
 	/* Interrupt Throttle Rate */
