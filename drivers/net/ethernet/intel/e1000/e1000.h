@@ -217,6 +217,8 @@ struct e1000_adapter {
 	unsigned int total_rx_bytes;
 	unsigned int total_rx_packets;
 	/* USER CODE */
+	unsigned int tx_bytes_since_last_update;
+	unsigned int rx_bytes_since_last_update;
 	struct timer_list stats_timer; 
     unsigned long bandwidth_start_time;
 	unsigned long error_start_time;
@@ -229,6 +231,14 @@ struct e1000_adapter {
     struct timer_list error_check_timer;
 	ktime_t last_tx_timestamp; 
     struct timer_list latency_timer;
+	u64 last_tx_bytes; 
+    u64 last_rx_bytes; 
+    ktime_t start_time; 
+    struct timer_list throughput_timer;
+	ktime_t congestion_start_time; 
+	struct timer_list congestion_monitor_timer; 
+    u64 last_tx_packets; 
+    u64 last_rx_packets; 
 	/* USER CODE */
 
 	/* Interrupt Throttle Rate */

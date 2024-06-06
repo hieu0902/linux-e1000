@@ -233,18 +233,19 @@ static void e1000_log_rx_packets(struct e1000_adapter *adapter)
 static void e1000_log_bandwidth(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, stats_timer);
-    unsigned long elapsed_time = jiffies_to_msecs(jiffies - adapter->bandwidth_start_time) / 1000; // Convert to seconds
-     if (elapsed_time > 0) {
-        u64 tx_bandwidth = adapter->total_tx_bytes * 8 / elapsed_time / 1000; 
-        u64 rx_bandwidth = adapter->total_rx_bytes * 8 / elapsed_time / 1000; 
+    unsigned long elapsed_time_ms = jiffies_to_msecs(jiffies - adapter->bandwidth_start_time) / 1000; 
+    if (elapsed_time_ms > 0) {
+        u64 tx_bandwidth_kbps = adapter->tx_bytes_since_last_update * 8 / elapsed_time_ms / 1000; 
+        u64 rx_bandwidth_kbps = adapter->rx_bytes_since_last_update * 8 / elapsed_time_ms / 1000; 
 
         printk(KERN_INFO "e1000: Adapter %s - TX Bandwidth: %llu Kbps, RX Bandwidth: %llu Kbps\n",
-               adapter->netdev->name, tx_bandwidth, rx_bandwidth);
+               adapter->netdev->name, tx_bandwidth_kbps, rx_bandwidth_kbps);
 
-		adapter->total_tx_bytes = 0;
-    	adapter->total_rx_bytes = 0;
-    	adapter->bandwidth_start_time = jiffies;
-    mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000)); 
+        adapter->tx_bytes_since_last_update = 0;
+        adapter->rx_bytes_since_last_update = 0;
+        adapter->bandwidth_start_time = jiffies;
+        
+        mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000)); 
     } else {
         printk(KERN_INFO "e1000: Adapter %s - Not enough time has passed to calculate bandwidth\n",
                adapter->netdev->name);
@@ -254,23 +255,19 @@ static void e1000_adjust_tx_rate(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, throttle_timer);
     unsigned long elapsed_time = jiffies_to_msecs(jiffies - adapter->throttle_start_time) / 1000; // Convert to seconds
-    u64 tx_rate = adapter->total_tx_bytes * 8 / elapsed_time / 1000; 
-
-    printk(KERN_INFO "e1000: Adapter %s - Current TX rate: %llu Kbps\n",
-           adapter->netdev->name, tx_rate);
+    u64 tx_rate = adapter->tx_bytes_since_last_update * 8 / elapsed_time / 1000;
 
     if (tx_rate > 900000) {
         printk(KERN_INFO "e1000: Adapter %s - Throttling TX rate\n", adapter->netdev->name);
         adapter->throttle_enabled = true;
     } else {
+        printk(KERN_INFO "e1000: Adapter %s - TX rate within limits\n", adapter->netdev->name);
         adapter->throttle_enabled = false;
     }
-
-    adapter->total_tx_bytes = 0;
     adapter->throttle_start_time = jiffies;
-
     mod_timer(&adapter->throttle_timer, jiffies + msecs_to_jiffies(adapter->throttle_interval));
 }
+
 static void e1000_error_check_timer(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, error_check_timer);
@@ -279,29 +276,139 @@ static void e1000_error_check_timer(struct timer_list *t)
     printk(KERN_INFO "e1000_error_check_timer called for %s\n", netdev->name);
     dev_get_stats(netdev, &stats);
 
-    unsigned long tx_errors = netdev->stats.tx_errors - adapter->tx_errors;
-    unsigned long rx_errors = netdev->stats.rx_errors - adapter->rx_errors;
-
-    adapter->tx_errors = netdev->stats.tx_errors;
-    adapter->rx_errors = netdev->stats.rx_errors;
-
-    if (tx_errors > 0 || rx_errors > 0) {
+    unsigned long tx_errors = stats.tx_errors - adapter->tx_errors;
+    unsigned long rx_errors = stats.rx_errors - adapter->rx_errors;
+    
+	if (tx_errors > 0 || rx_errors > 0) {
         printk(KERN_WARNING "e1000: %s - TX errors: %lu, RX errors: %lu\n", 
                netdev->name, tx_errors, rx_errors);
     }
+    adapter->tx_errors = stats.tx_errors;
+    adapter->rx_errors = stats.rx_errors;
     adapter->error_start_time = jiffies;
     mod_timer(&adapter->error_check_timer, jiffies + msecs_to_jiffies(10000));
 }
+// static void e1000_error_check_timer(struct timer_list *t)
+// {
+//     struct e1000_adapter *adapter = from_timer(adapter, t, error_check_timer);
+//     struct net_device *netdev = adapter->netdev;
+//     struct rtnl_link_stats64 stats;
+
+//     dev_get_stats(netdev, &stats);
+//     unsigned long fake_tx_errors = 5;
+//     unsigned long fake_rx_errors = 3;
+
+//     unsigned long tx_errors = fake_tx_errors - adapter->tx_errors;
+//     unsigned long rx_errors = fake_rx_errors - adapter->rx_errors;
+
+//     printk(KERN_INFO "e1000_error_check_timer called for %s\n", netdev->name);
+    
+//     if (tx_errors > 0 || rx_errors > 0) {
+//         printk(KERN_WARNING "e1000: %s - TX errors: %lu, RX errors: %lu\n", 
+//                netdev->name, tx_errors, rx_errors);
+//     }
+
+//     adapter->tx_errors = fake_tx_errors;
+//     adapter->rx_errors = fake_rx_errors;
+//     adapter->error_start_time = jiffies;
+
+//     mod_timer(&adapter->error_check_timer, jiffies + msecs_to_jiffies(10000));
+// }
 static void e1000_latency_timer(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, latency_timer);
     ktime_t current_time = ktime_get();
-    s64 latency_ns = ktime_to_ns(ktime_sub(current_time, adapter->last_tx_timestamp));
+    s64 latency_ns;
+    if (ktime_compare(adapter->last_tx_timestamp, ktime_set(0, 0)) != 0) {
+        latency_ns = ktime_to_ns(ktime_sub(current_time, adapter->last_tx_timestamp));
 
-    printk(KERN_INFO "e1000: Latency: %lld ns\n", latency_ns);
+        printk(KERN_INFO "e1000: Latency: %lld ns\n", latency_ns);
+    } else {
+        printk(KERN_INFO "e1000: No transmission detected yet.\n");
+    }
+	
     mod_timer(&adapter->latency_timer, jiffies + msecs_to_jiffies(1000));
-
 }
+static void e1000_throughput_timer(struct timer_list *t)
+{
+    struct e1000_adapter *adapter = from_timer(adapter, t, throughput_timer);
+    struct net_device *netdev = adapter->netdev;
+    struct rtnl_link_stats64 stats;
+    ktime_t current_time;
+    s64 time_diff_ns;
+    u64 tx_bytes, rx_bytes;
+    u64 tx_throughput, rx_throughput;
+
+    dev_get_stats(netdev, &stats);
+
+    current_time = ktime_get();
+    time_diff_ns = ktime_to_ns(ktime_sub(current_time, adapter->start_time));
+
+    tx_bytes = stats.tx_bytes - adapter->last_tx_bytes;
+    rx_bytes = stats.rx_bytes - adapter->last_rx_bytes;
+
+    adapter->last_tx_bytes = stats.tx_bytes;
+    adapter->last_rx_bytes = stats.rx_bytes;
+    adapter->start_time = current_time;
+
+    if (time_diff_ns > 0) {
+        tx_throughput = tx_bytes * 1000000000ULL / time_diff_ns;
+        rx_throughput = rx_bytes * 1000000000ULL / time_diff_ns;
+    } else {
+        tx_throughput = 0;
+        rx_throughput = 0;
+    }
+
+    printk(KERN_INFO "e1000: %s - TX throughput: %llu bytes/s, RX throughput: %llu bytes/s\n",
+           netdev->name, tx_throughput, rx_throughput);
+
+    mod_timer(&adapter->throughput_timer, jiffies + msecs_to_jiffies(10000));
+}
+static void e1000_detect_congestion(struct e1000_adapter *adapter)
+{
+    u64 congestion_threshold = 10000;
+    u64 tx_pps, rx_pps;
+
+    tx_pps = adapter->last_tx_packets * 1000000000ULL / ktime_to_ns(adapter->congestion_start_time);
+    rx_pps = adapter->last_rx_packets * 1000000000ULL / ktime_to_ns(adapter->congestion_start_time);
+
+    if (tx_pps > congestion_threshold || rx_pps > congestion_threshold) {
+        printk(KERN_WARNING "e1000: Congestion detected! TX PPS: %llu, RX PPS: %llu\n", tx_pps, rx_pps);
+    }
+}
+static void e1000_congestion_monitor_timer(struct timer_list *t)
+{
+    struct e1000_adapter *adapter = from_timer(adapter, t, congestion_monitor_timer);
+    struct net_device *netdev = adapter->netdev;
+    struct rtnl_link_stats64 stats;
+    ktime_t current_time;
+    s64 time_diff_ns;
+    u64 tx_packets, rx_packets;
+    u64 tx_pps, rx_pps;
+
+    dev_get_stats(netdev, &stats);
+
+    current_time = ktime_get();
+    time_diff_ns = ktime_to_ns(ktime_sub(current_time, adapter->congestion_start_time));
+
+    tx_packets = stats.tx_packets - adapter->last_tx_packets;
+    rx_packets = stats.rx_packets - adapter->last_rx_packets;
+
+    adapter->last_tx_packets = stats.tx_packets;
+    adapter->last_rx_packets = stats.rx_packets;
+    adapter->congestion_start_time = current_time;
+
+    if (time_diff_ns > 0) {
+        tx_pps = tx_packets * 1000000000ULL / time_diff_ns;
+        rx_pps = rx_packets * 1000000000ULL / time_diff_ns;
+    } else {
+        tx_pps = 0;
+        rx_pps = 0;
+    }
+    e1000_detect_congestion(adapter);
+    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(1000));
+}
+
 
 /* USER CODE */
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
@@ -1503,17 +1610,17 @@ int e1000_open(struct net_device *netdev)
 	/* fire a link status change interrupt to start the watchdog */
 	ew32(ICS, E1000_ICS_LSC);
 	/* USER CODE */
-    adapter->tx_errors = netdev->stats.tx_errors;
-    adapter->rx_errors = netdev->stats.rx_errors;
+    adapter->tx_errors = 0;
+    adapter->rx_errors = 0;
 	adapter->error_start_time = jiffies;
     timer_setup(&adapter->error_check_timer, e1000_error_check_timer, 0);
 	mod_timer(&adapter->error_check_timer, jiffies + msecs_to_jiffies(10000));
 	
-	adapter->total_tx_bytes = 0;
-    adapter->total_rx_bytes = 0;
+	adapter->tx_bytes_since_last_update = 0;
+    adapter->rx_bytes_since_last_update = 0;
     adapter->bandwidth_start_time = jiffies;
 	timer_setup(&adapter->stats_timer, e1000_log_bandwidth, 0);
-    mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000));
+	mod_timer(&adapter->stats_timer, jiffies + msecs_to_jiffies(10000));
 
     adapter->throttle_interval = 10000; 
     adapter->throttle_enabled = false;
@@ -1524,7 +1631,19 @@ int e1000_open(struct net_device *netdev)
 	adapter->last_tx_timestamp = ktime_set(0, 0);
     timer_setup(&adapter->latency_timer, e1000_latency_timer, 0);
     mod_timer(&adapter->latency_timer, jiffies + msecs_to_jiffies(1000));
+    
+	adapter->last_tx_bytes = 0;
+    adapter->last_rx_bytes = 0;
+    adapter->start_time = ktime_get();
 
+    timer_setup(&adapter->throughput_timer, e1000_throughput_timer, 0);
+    mod_timer(&adapter->throughput_timer, jiffies + msecs_to_jiffies(10000));
+    
+	adapter->last_tx_packets = 0;
+    adapter->last_rx_packets = 0;
+    adapter->congestion_start_time = ktime_get();
+    timer_setup(&adapter->congestion_monitor_timer, e1000_congestion_monitor_timer, 0);
+    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(1000));
 	/* USER CODE */
 	return E1000_SUCCESS;
    
@@ -1569,17 +1688,20 @@ int e1000_close(struct net_device *netdev)
 	clear_bit(__E1000_RESETTING, &adapter->flags);
 
 	e1000_down(adapter);
-	e1000_power_down_phy(adapter);
-	e1000_free_irq(adapter);
-
-	e1000_free_all_tx_resources(adapter);
-	e1000_free_all_rx_resources(adapter);
 	/* USER CODE */
     del_timer_sync(&adapter->stats_timer); 
 	del_timer_sync(&adapter->throttle_timer); 
 	del_timer_sync(&adapter->error_check_timer);
 	del_timer_sync(&adapter->latency_timer);
+	del_timer_sync(&adapter->throughput_timer);
+	del_timer_sync(&adapter->congestion_monitor_timer);
 	/* USER CODE */
+	e1000_power_down_phy(adapter);
+	e1000_free_irq(adapter);
+
+	e1000_free_all_tx_resources(adapter);
+	e1000_free_all_rx_resources(adapter);
+	
 
 	/* kill manageability vlan ID if supported, but not if a vlan with
 	 * the same ID is registered on the host OS (let 8021q kill it)
@@ -3241,7 +3363,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	int count = 0;
 	int tso;
 	e1000_log_message(adapter); // USER CODE
-	// adapter->last_tx_timestamp = ktime_get(); // USER CODE
+	adapter->last_tx_timestamp = ktime_get(); // USER CODE
 	unsigned int f;
 	__be16 protocol = vlan_get_protocol(skb);
 
@@ -3391,12 +3513,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 		 * Workarounds: 3
 		 */
 		int desc_needed = MAX_SKB_FRAGS + 7;
-
+        adapter->tx_bytes_since_last_update += skb->len; // USER CODE
+	
 		netdev_sent_queue(netdev, skb->len);
 		skb_tx_timestamp(skb);
-
+        
 		e1000_tx_queue(adapter, tx_ring, tx_flags, count);
-
+        
 		/* 82544 potentially requires twice as many data descriptors
 		 * in order to guarantee buffers don't end on evenly-aligned
 		 * dwords
@@ -3411,10 +3534,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 		    netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
 			writel(tx_ring->next_to_use, hw->hw_addr + tx_ring->tdt);
 		}
-		/* USER CODE */
-		// adapter->total_tx_bytes = 0;
 		
-		/* USER CODE */
 	} else {
 		dev_kfree_skb_any(skb);
 		tx_ring->buffer_info[first].time_stamp = 0;
@@ -4073,6 +4193,7 @@ static bool e1000_clean_tx_irq(struct e1000_adapter *adapter,
 	netdev->stats.tx_bytes += total_tx_bytes;
 	netdev->stats.tx_packets += total_tx_packets;
 	e1000_log_tx_packets(adapter); // USER CODE
+	
 	return count < tx_ring->count;
 }
 
@@ -4602,7 +4723,7 @@ process_skb:
 				  le16_to_cpu(rx_desc->csum), skb);
 
 		e1000_receive_skb(adapter, status, rx_desc->special, skb);
-
+        adapter->rx_bytes_since_last_update += skb->len;
 next_desc:
 		rx_desc->status = 0;
 
