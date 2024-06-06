@@ -259,7 +259,6 @@ struct e1000_adapter {
 	u64 gotcl_old;
 	u64 tpt_old;
 	u64 colc_old;
-	u64 tx_packet_count; // USER CODE
 	u32 tx_timeout_count;
 	u32 tx_fifo_head;
 	u32 tx_head_addr;

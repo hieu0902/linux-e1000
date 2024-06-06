@@ -364,18 +364,7 @@ static void e1000_throughput_timer(struct timer_list *t)
 
     mod_timer(&adapter->throughput_timer, jiffies + msecs_to_jiffies(10000));
 }
-static void e1000_detect_congestion(struct e1000_adapter *adapter)
-{
-    u64 congestion_threshold = 10000;
-    u64 tx_pps, rx_pps;
 
-    tx_pps = adapter->last_tx_packets * 1000000000ULL / ktime_to_ns(adapter->congestion_start_time);
-    rx_pps = adapter->last_rx_packets * 1000000000ULL / ktime_to_ns(adapter->congestion_start_time);
-
-    if (tx_pps > congestion_threshold || rx_pps > congestion_threshold) {
-        printk(KERN_WARNING "e1000: Congestion detected! TX PPS: %llu, RX PPS: %llu\n", tx_pps, rx_pps);
-    }
-}
 static void e1000_congestion_monitor_timer(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, congestion_monitor_timer);
@@ -385,30 +374,34 @@ static void e1000_congestion_monitor_timer(struct timer_list *t)
     s64 time_diff_ns;
     u64 tx_packets, rx_packets;
     u64 tx_pps, rx_pps;
+	u64 congestion_threshold = 10000;
 
     dev_get_stats(netdev, &stats);
 
     current_time = ktime_get();
     time_diff_ns = ktime_to_ns(ktime_sub(current_time, adapter->congestion_start_time));
 
-    tx_packets = stats.tx_packets - adapter->last_tx_packets;
-    rx_packets = stats.rx_packets - adapter->last_rx_packets;
+    tx_packets = netdev->stats.tx_packets - adapter->last_tx_packets;
+    rx_packets = netdev->stats.rx_packets - adapter->last_rx_packets;
 
-    adapter->last_tx_packets = stats.tx_packets;
-    adapter->last_rx_packets = stats.rx_packets;
+    adapter->last_tx_packets = netdev->stats.tx_packets;
+    adapter->last_rx_packets = netdev->stats.rx_packets;
     adapter->congestion_start_time = current_time;
 
     if (time_diff_ns > 0) {
         tx_pps = tx_packets * 1000000000ULL / time_diff_ns;
         rx_pps = rx_packets * 1000000000ULL / time_diff_ns;
+		printk(KERN_INFO "e1000: TX PPS: %llu, RX PPS: %llu\n", tx_pps, rx_pps);
+
+    if (tx_pps > congestion_threshold || rx_pps > congestion_threshold) {
+        printk(KERN_WARNING "e1000: Congestion detected! TX PPS: %llu, RX PPS: %llu\n", tx_pps, rx_pps);
+    }
     } else {
         tx_pps = 0;
         rx_pps = 0;
     }
-    e1000_detect_congestion(adapter);
-    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(1000));
+    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(10000));
 }
-
 
 /* USER CODE */
 struct net_device *e1000_get_hw_dev(struct e1000_hw *hw)
@@ -1628,22 +1621,22 @@ int e1000_open(struct net_device *netdev)
     timer_setup(&adapter->throttle_timer, e1000_adjust_tx_rate, 0);
     mod_timer(&adapter->throttle_timer, jiffies + msecs_to_jiffies(adapter->throttle_interval));
 	
-	adapter->last_tx_timestamp = ktime_set(0, 0);
+	adapter->last_tx_timestamp = ktime_get();
     timer_setup(&adapter->latency_timer, e1000_latency_timer, 0);
     mod_timer(&adapter->latency_timer, jiffies + msecs_to_jiffies(1000));
     
-	adapter->last_tx_bytes = 0;
-    adapter->last_rx_bytes = 0;
+	adapter->last_tx_bytes = netdev->stats.tx_bytes;
+    adapter->last_rx_bytes = netdev->stats.rx_bytes;
     adapter->start_time = ktime_get();
 
     timer_setup(&adapter->throughput_timer, e1000_throughput_timer, 0);
     mod_timer(&adapter->throughput_timer, jiffies + msecs_to_jiffies(10000));
     
-	adapter->last_tx_packets = 0;
-    adapter->last_rx_packets = 0;
+	adapter->last_tx_packets = netdev->stats.tx_packets;
+    adapter->last_rx_packets = netdev->stats.rx_packets;
     adapter->congestion_start_time = ktime_get();
     timer_setup(&adapter->congestion_monitor_timer, e1000_congestion_monitor_timer, 0);
-    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(1000));
+    mod_timer(&adapter->congestion_monitor_timer, jiffies + msecs_to_jiffies(10000));
 	/* USER CODE */
 	return E1000_SUCCESS;
    
@@ -4723,7 +4716,7 @@ process_skb:
 				  le16_to_cpu(rx_desc->csum), skb);
 
 		e1000_receive_skb(adapter, status, rx_desc->special, skb);
-        adapter->rx_bytes_since_last_update += skb->len;
+        adapter->rx_bytes_since_last_update += skb->len; // USER CODE
 next_desc:
 		rx_desc->status = 0;
 
