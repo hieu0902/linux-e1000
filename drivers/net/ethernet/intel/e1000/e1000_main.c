@@ -233,10 +233,10 @@ static void e1000_log_rx_packets(struct e1000_adapter *adapter)
 static void e1000_log_bandwidth(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, stats_timer);
-    unsigned long elapsed_time_ms = jiffies_to_msecs(jiffies - adapter->bandwidth_start_time) / 1000; 
-    if (elapsed_time_ms > 0) {
-        u64 tx_bandwidth_kbps = adapter->tx_bytes_since_last_update * 8 / elapsed_time_ms / 1000; 
-        u64 rx_bandwidth_kbps = adapter->rx_bytes_since_last_update * 8 / elapsed_time_ms / 1000; 
+    unsigned long elapsed_time = jiffies_to_msecs(jiffies - adapter->bandwidth_start_time) / 1000; 
+    if (elapsed_time > 0) {
+        u64 tx_bandwidth_kbps = adapter->tx_bytes_since_last_update * 8 / elapsed_time / 1000; 
+        u64 rx_bandwidth_kbps = adapter->rx_bytes_since_last_update * 8 / elapsed_time / 1000; 
 
         printk(KERN_INFO "e1000: Adapter %s - TX Bandwidth: %llu Kbps, RX Bandwidth: %llu Kbps\n",
                adapter->netdev->name, tx_bandwidth_kbps, rx_bandwidth_kbps);
@@ -288,32 +288,7 @@ static void e1000_error_check_timer(struct timer_list *t)
     adapter->error_start_time = jiffies;
     mod_timer(&adapter->error_check_timer, jiffies + msecs_to_jiffies(10000));
 }
-// static void e1000_error_check_timer(struct timer_list *t)
-// {
-//     struct e1000_adapter *adapter = from_timer(adapter, t, error_check_timer);
-//     struct net_device *netdev = adapter->netdev;
-//     struct rtnl_link_stats64 stats;
 
-//     dev_get_stats(netdev, &stats);
-//     unsigned long fake_tx_errors = 5;
-//     unsigned long fake_rx_errors = 3;
-
-//     unsigned long tx_errors = fake_tx_errors - adapter->tx_errors;
-//     unsigned long rx_errors = fake_rx_errors - adapter->rx_errors;
-
-//     printk(KERN_INFO "e1000_error_check_timer called for %s\n", netdev->name);
-    
-//     if (tx_errors > 0 || rx_errors > 0) {
-//         printk(KERN_WARNING "e1000: %s - TX errors: %lu, RX errors: %lu\n", 
-//                netdev->name, tx_errors, rx_errors);
-//     }
-
-//     adapter->tx_errors = fake_tx_errors;
-//     adapter->rx_errors = fake_rx_errors;
-//     adapter->error_start_time = jiffies;
-
-//     mod_timer(&adapter->error_check_timer, jiffies + msecs_to_jiffies(10000));
-// }
 static void e1000_latency_timer(struct timer_list *t)
 {
     struct e1000_adapter *adapter = from_timer(adapter, t, latency_timer);
@@ -1602,6 +1577,7 @@ int e1000_open(struct net_device *netdev)
 
 	/* fire a link status change interrupt to start the watchdog */
 	ew32(ICS, E1000_ICS_LSC);
+
 	/* USER CODE */
     adapter->tx_errors = 0;
     adapter->rx_errors = 0;
@@ -1621,7 +1597,7 @@ int e1000_open(struct net_device *netdev)
     timer_setup(&adapter->throttle_timer, e1000_adjust_tx_rate, 0);
     mod_timer(&adapter->throttle_timer, jiffies + msecs_to_jiffies(adapter->throttle_interval));
 	
-	adapter->last_tx_timestamp = ktime_get();
+	adapter->last_tx_timestamp = ktime_set(0,0);
     timer_setup(&adapter->latency_timer, e1000_latency_timer, 0);
     mod_timer(&adapter->latency_timer, jiffies + msecs_to_jiffies(1000));
     
@@ -3356,7 +3332,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	int count = 0;
 	int tso;
 	e1000_log_message(adapter); // USER CODE
-	adapter->last_tx_timestamp = ktime_get(); // USER CODE
+	// adapter->last_tx_timestamp = ktime_get(); // USER CODE
 	unsigned int f;
 	__be16 protocol = vlan_get_protocol(skb);
 
@@ -3510,7 +3486,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	
 		netdev_sent_queue(netdev, skb->len);
 		skb_tx_timestamp(skb);
-        
+        adapter->last_tx_timestamp = ktime_get(); // USER CODE
 		e1000_tx_queue(adapter, tx_ring, tx_flags, count);
         
 		/* 82544 potentially requires twice as many data descriptors
